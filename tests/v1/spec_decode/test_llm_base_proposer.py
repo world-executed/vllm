@@ -110,3 +110,31 @@ def test_draft_layer_iteration_is_deterministic(monkeypatch: pytest.MonkeyPatch)
         assert len(proposer.draft_attn_groups) == 1
         assert proposer.draft_attn_groups[0].layer_names == expected_order
         assert proposer.block_size == KERNEL_BLOCK_SIZE
+
+
+@pytest.mark.parametrize(
+    ("hidden_size", "word_embed_proj_dim", "expected_hidden_size"),
+    [(768, 768, 768), (1024, 512, 512), (2048, 2048, 2048)],
+)
+def test_draft_hidden_size_uses_projected_output_dim(
+    hidden_size: int, word_embed_proj_dim: int, expected_hidden_size: int
+):
+    """Projected-output draft models should size proposer buffers by the
+    emitted hidden-state dimension, not the internal transformer hidden size."""
+
+    class _FakeDraftModelConfig:
+        def __init__(self):
+            self.hf_config = SimpleNamespace(
+                hidden_size=hidden_size,
+                word_embed_proj_dim=word_embed_proj_dim,
+            )
+
+        def get_hidden_size(self):
+            return hidden_size
+
+    assert (
+        llm_base_proposer.SpecDecodeBaseProposer._get_draft_hidden_size(
+            _FakeDraftModelConfig()
+        )
+        == expected_hidden_size
+    )

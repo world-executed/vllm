@@ -69,6 +69,25 @@ logger = init_logger(__name__)
 
 
 class SpecDecodeBaseProposer:
+    @staticmethod
+    def _get_draft_hidden_size(draft_model_config) -> int:
+        # Some models (e.g. OPT-350m) project the transformer hidden states to a
+        # different output dimension before returning them. The speculative
+        # proposer stores and forwards the model's emitted hidden states, so the
+        # staging buffer must match the actual projected output size rather than
+        # the internal transformer hidden_size.
+        hidden_size = draft_model_config.get_hidden_size()
+        draft_hf_config = getattr(draft_model_config, "hf_config", None)
+        if draft_hf_config is not None:
+            projected_hidden_size = getattr(draft_hf_config, "word_embed_proj_dim", None)
+            if projected_hidden_size is not None:
+                hidden_size = projected_hidden_size
+            if hasattr(draft_hf_config, "compress_ratios") and hasattr(
+                draft_hf_config, "hc_mult"
+            ):
+                hidden_size = hidden_size * draft_hf_config.hc_mult
+        return hidden_size
+
     def __init__(
         self,
         vllm_config: VllmConfig,
@@ -93,18 +112,11 @@ class SpecDecodeBaseProposer:
 
         # We need to get the hidden size from the draft model config because
         # the draft model's hidden size can be different from the target model's
-        # hidden size (e.g., Llama 3.3 70B).
-        self.hidden_size = self.draft_model_config.get_hidden_size()
+        # hidden size (e.g., Llama 3.3 70B). Some models additionally project to a
+        # different output hidden size before returning hidden states, so use the
+        # actual emitted dimension here.
+        self.hidden_size = self._get_draft_hidden_size(self.draft_model_config)
         self.inputs_embeds_size = self.draft_model_config.get_inputs_embeds_size()
-
-        # DeepSeek V4 MTP consumes the target's pre-hc_head residual stream,
-        # shape (T, hc_mult * hidden_size). Expand the hidden_states buffer
-        # so target_hidden_states fits; detect DeepseekV4 via draft hf_config.
-        draft_hf_config = self.draft_model_config.hf_config
-        if hasattr(draft_hf_config, "compress_ratios") and hasattr(
-            draft_hf_config, "hc_mult"
-        ):
-            self.hidden_size = self.hidden_size * draft_hf_config.hc_mult
 
         # Unifying eagle, draft model, and parallel drafting support.
         # DFlash always uses parallel drafting (all tokens in one pass),
